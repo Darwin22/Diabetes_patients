@@ -1,9 +1,668 @@
 ---
-title: "Diabetes_patients"
+title: "Diabetes_report"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width=10)
 ```
+
+# Diabetes 130-US hospitals dataset: Analysis of factors related to readmission as well as other outcomes pertaining to patients with diabetes. 
+
+
+
+## 1.	Introduction and Methodology
+
+
+The management of hyperglycemia in hospitalized patients has significant importance, as it can help control some phenomenon like morbidity and mortality related to health problem. In this dataset, we will to analyze factors related to readmission as well as other outcomes pertaining to patients with diabetes. The dataset represents 10 years (1999-2008) of clinical care at 130 US hospitals. It has over 50 features representing patient and hospital outcomes. Information was giving for encounters that satisfied the following criteria:
+
+-	It is an inpatient encounter (a hospital admission)
+
+-	It is a diabetic encounter, that is, one during which any kind of diabetes was entered to the system as a diagnosis.
+
+-	The length of stay was at least 1 day and at most 14 days
+
+-	Laboratory tests were performed during the encounter
+
+-	Medications were administered during the encounter
+
+The data contains attributes such as patient number, race, gender, age, admission type, time hospital, medical specialty of admitting physician, number of lab test performed, HbA1c test result, diagnosis, number of medications, diabetic medications, number of outpatients, inpatient, emergency visits in the year before the hospitalization and many others.
+
+
+*Methodology*
+
+
+In this project, our goal is to pre-process, analyze, visualize, and conduct unsupervised learning on this input dataset. In details, we plan on using clustering analysis in order to group patients together based on the features. we first start with data pre-processing by exploring the data, managing missing values, taking care of near-zero variance variables and transforming variables. Following that, we start doing clustering analysis by using first, k-means algorithm, and second, hierarchical clustering. 
+
+
+
+## 2.	Data cleaning and exploration
+
+
+The diabetes dataset is available on UCI Machine learning repository website through the link:  https://archive.ics.uci.edu/ml/datasets/diabetes+130-us+hospitals+for+years+1999-2008. At very beginning, the dataset contains 101766 observations and 49 features.  In this part, our goal is to get familiar with the dataset and get it ready by doing some preliminary statistical analysis, variable transformation, deal with NA values and so on. 
+
+
+```{r}
+# Import the dataset
+path = "https://raw.githubusercontent.com/Darwin22/Diabetes_patients/master/data/diabetic_data1.csv"
+diabetes = read.csv(path, header = T)
+# Removing the column encounter_id
+diabetes = diabetes[, -1]
+str(diabetes)
+dim(diabetes)
+```
+
+
+
+### 2.1. Missingness
+
+
+The dataset have many variables with ‘?’ as data points. Apparently, it was an indication of a missing value which was therefore replaced with NA so we can better manage them. Upon examination, we see that the missing are only found in five of the 49 features. The table below resume the percentage of missing data for each of these 5 features. We can see that, for some variables like weight, the number of missing point is extremely high. 
+
+
+```{r}
+#------Dealing with Missing Values:
+# replace the "?" in the columns with NA
+diabetes[diabetes=="?"] = NA
+# Counting the amount of NA values in the dataset in general
+#sum(is.na(diabetes))
+# Distribution of the NA's among the columns
+allmisscols=sapply(diabetes, function(x) sum(length(which(is.na(x)))))
+allmiss=as.table(allmisscols[allmisscols>0])
+# percentage of missing values for each of these columns
+allmiss_pct = round(allmiss*100/101766, 2)
+allmiss_pct
+```
+
+
+
+To deal with the missing values, in the following histogram that shows the distribution of missing values, we consider a threshold of 30% (by using a red line), and variables with missing values above 30% were removed from consideration at this point. Thus, variables weight, payer_code and medical_specialty was removed from the dataset. For the other variables we leave them as the are for now, as further manipulations in the dataset will take care of the missing values. 
+
+
+
+```{r}
+
+barplot(allmiss_pct, ylim = c(0, 100), ylab = "Percentage of NA's", las=2, main = "Missing Values")
+# detect variables having 30% or more missing values
+abline(h=30, col="red")
+
+# removing three variables having more than 30% of their data missing:  payer_code, medical_specialty and weight 
+#diabetes = diabetes[,-c(diabetes$weight, diabetes$payer_code, diabetes$medical_specialty)]
+diabetes = subset(diabetes, select = -c(weight, payer_code, medical_specialty))
+```
+
+
+
+
+### 2.2.	 Near Zero-Variances variables
+
+
+Near Zero-Variances (NZV) refer to the case when some variables take almost a unique value across the dataset. This kind of variables are not only non-informative sometimes, they can also break some data mining methods you may want to use. Therefore, it is always a good practice to address this phenomenon, particularly if you are dealing with a dataset with large number of variables. In our case, we have a few factor variables with Near zero-variances. Keeping them would later generate considerable number of dummy variables and increase the computation complexities and resource requirements. Consequently, removed all NZV variables. By default, the nearZeroVar() function in R from caret package considers a variable as near-zero variance if the percentage of unique values in the samples is less 10%. By executing this function on our dataset, we remove 18 near-zero variance variables. Below are the Near Zero-Variance variables.
+
+
+
+```{r}
+###------------- Near Zero-Variance Variables(NZV)
+# Zero-variables:
+#summary(diabetes$examide)
+#summary(diabetes$citoglipton)
+# Near zero-variance:
+library(caret)
+x = nearZeroVar(diabetes)
+# name of the variables with NZV
+names(diabetes)[x]
+# removing variables with NZV
+diabetes = diabetes[, -x]
+```
+
+
+
+### 2.3. Multiple Encounters of a patient.
+
+
+The dataset contained multiple rows with the same patient number (patient ID). It is unclear if multiple encounters between doctors and patients, i.e. visits, are independent. There is a risk that these multiple visits of a patient might be related, hence introduce bias since some encounters of a patient can be correlated. To eliminate this risk, we decide to keep one and only one encounter which had the maximum time_in_hospital, assuming time_in_hospital was characteristic for readmission and would present sufficient variance in training data. Once we have done that, we removed the patient ID variable and the encounter ID variable. Thus, the dataset is reduced to 27 variables and 71518 observations.
+
+
+
+```{r}
+#---------Mutiple Encounters of a patient
+# number of rows with duplicate patient_nbr
+nrow(diabetes[duplicated(diabetes$patient_nbr), ])
+
+# removing duplicate of patient_nbr, by keeping the ones with max(time_in_hospital) among the duplicates. 
+library(dplyr)
+diabetes=diabetes %>%
+  group_by(patient_nbr)%>%
+  filter(row_number(desc(time_in_hospital))==1)
+```
+
+
+
+### 2.4.	 Variable transformation
+
+#### 2.4.1.	Categorical variables
+
+
+Some of the categorical variables contain too many categories, this is the case of the three variables: diag_1, diag_2, and diag_3, each had some 700 levels. Which would require around 900 dummy variables and the computation needs would be expensive to manage. To consolidate the levels of these three variables, I follow the rule in table 2 from the original report paper about this dataset: https://www.hindawi.com/journals/bmri/2014/781670/. The levels are then reduced to 9 categories, and at the same time the NA’s values from these three variables were taking care by assigning the ‘other’ level. Besides these variables, I also take care of other factors variables. The levels of gender variable were reduced from 3 (male, female and unknown) to 2 (male and female). We consolidate variable Age from 10 level to 4 levels, admission source variable was consolidated from 25 levels to 5 (referral, transfer, birth, unknown and other). For the race variable, we decide to remove the missing values, which bring the number of observations to 69598 patients. 
+One additional point I want to emphasis is that, as my goal is to use clustering analysis, the algorithms typically need numerical values to compute some metrics like distances. To allow using categorical variables in these algorithms, on solution is to use one-hot encoded to transform these categorical variables into numerical values. That’s the solution I adopt in this project.
+
+
+
+
+```{r}
+#-------- Categorical variables
+diabetes$gender = factor(diabetes$gender)
+#summary(diabetes$gender)
+# eliminate the unknown type of gender:
+levels(diabetes$gender)=c('Female', 'Male', 'Female')
+
+# consolidated variable Age from 10-level factor to 4
+#summary(diabetes$age)
+diabetes$age = factor(diabetes$age)
+levels(diabetes$age)=c("[0-30)","[0-30)","[0-30)","[30-60)","[30-60)","[30-60)","[60-80)","[60-80)","80+","80+")
+
+# reduce the levels of admission type id
+diabetes$admission_type_id=factor(diabetes$admission_type_id)
+#summary(diabetes$admission_type_id)
+# change 8 levels to 3
+levels(diabetes$admission_type_id) = c("urgent","urgent","elective","urgent","unknown","unknown","urgent","unknown")
+
+# admission source
+diabetes$admission_source_id = factor(diabetes$admission_source_id)
+#summary(diabetes$admission_source_id) # 25 levels
+# reduce the levels of admission_source_id to 5 levels, r:referral, t:transfer, b:birth, o:other, u:unknown
+levels(diabetes$admission_source_id)=c("r",	"r", "r", "t", "t",	"t",	"r", "o",	"u", "t",	"b",	"b",	"b",	"b",	
+                                       "u",	"u",	"t",	"t",	"u", "u",	"t","b", "b",	"t")
+
+# discharge_disposition_id variable
+diabetes$discharge_disposition_id=factor(diabetes$discharge_disposition_id)
+#summary(diabetes$discharge_disposition_id)
+# reduce the levels of discharge_disposition_id to 5 levels, d:discharge, h:hospice, u:unknown, o:other
+levels(diabetes$discharge_disposition_id)=c("d","d",	"d",	"d","d","d","o","d","h","d","o","o","h","h",
+                                            "d","d","d","u","o","o","o","d","d","d","u",	"u","d","d","d")
+
+
+# Diagnostic information
+#----Reduces levels for diag_1, diag_2, diag_3:
+#-- for diag_1
+diabetes$diag_1_fact = "NA"
+dia2=as.character(diabetes$diag_1)
+diabetes$diag_1_fact[(dia2>='390' & dia2<='459')|(dia2=='785')]="circulatory"
+diabetes$diag_1_fact[(dia2>='460' & dia2<='519')|(dia2=='786')]="Respiratory"
+diabetes$diag_1_fact[(dia2>='520' & dia2<='579')|(dia2=='787')]="Digestive"
+diabetes$diag_1_fact[(dia2>='250' & dia2<='251')]="Diabetes"
+diabetes$diag_1_fact[(dia2>='800' & dia2<='999')]="Injury"
+diabetes$diag_1_fact[(dia2>='710' & dia2<='739')]="Musculoskeletal"
+diabetes$diag_1_fact[(dia2>='580' & dia2<='629')|(dia2=='788')]="Genitourinary"
+diabetes$diag_1_fact[(dia2>='140' & dia2<='239')]="Neoplasms"
+diabetes$diag_1_fact[(diabetes$diag_1_fact)=='NA']="Other"
+table(diabetes$diag_1_fact)
+diabetes$diag_1_fact = factor(diabetes$diag_1_fact)
+
+#-- for diag_2
+diabetes$diag_2_fact = "NA"
+dia2=as.character(diabetes$diag_2)
+diabetes$diag_2_fact[(dia2>='390' & dia2<='459')|(dia2=='785')]="circulatory"
+diabetes$diag_2_fact[(dia2>='460' & dia2<='519')|(dia2=='786')]="Respiratory"
+diabetes$diag_2_fact[(dia2>='520' & dia2<='579')|(dia2=='787')]="Digestive"
+diabetes$diag_2_fact[(dia2>='250' & dia2<='251')]="Diabetes"
+diabetes$diag_2_fact[(dia2>='800' & dia2<='999')]="Injury"
+diabetes$diag_2_fact[(dia2>='710' & dia2<='739')]="Musculoskeletal"
+diabetes$diag_2_fact[(dia2>='580' & dia2<='629')|(dia2=='788')]="Genitourinary"
+diabetes$diag_2_fact[(dia2>='140' & dia2<='239')]="Neoplasms"
+diabetes$diag_2_fact[(diabetes$diag_2_fact)=='NA']="Other"
+table(diabetes$diag_2_fact)
+diabetes$diag_2_fact = factor(diabetes$diag_2_fact)
+
+# for diag_3
+diabetes$diag_3_fact = "NA"
+dia2=as.character(diabetes$diag_3)
+diabetes$diag_3_fact[(dia2>='390' & dia2<='459')|(dia2=='785')]="circulatory"
+diabetes$diag_3_fact[(dia2>='460' & dia2<='519')|(dia2=='786')]="Respiratory"
+diabetes$diag_3_fact[(dia2>='520' & dia2<='579')|(dia2=='787')]="Digestive"
+diabetes$diag_3_fact[(dia2>='250' & dia2<='251')]="Diabetes"
+diabetes$diag_3_fact[(dia2>='800' & dia2<='999')]="Injury"
+diabetes$diag_3_fact[(dia2>='710' & dia2<='739')]="Musculoskeletal"
+diabetes$diag_3_fact[(dia2>='580' & dia2<='629')|(dia2=='788')]="Genitourinary"
+diabetes$diag_3_fact[(dia2>='140' & dia2<='239')]="Neoplasms"
+diabetes$diag_3_fact[(diabetes$diag_3_fact)=='NA']="Other"
+table(diabetes$diag_3_fact)
+diabetes$diag_3_fact = factor(diabetes$diag_3_fact)
+
+diabetes = subset(diabetes, select = -c(diag_1, diag_2, diag_3))
+
+# remove the patient_nbr variable, it's an ID variable
+diabetes=subset(diabetes, select = -c(patient_nbr))
+```
+
+
+
+**Factor variables in the dataset:**
+
+```{r}
+# factor variable in the dataset
+names(diabetes)[sapply(diabetes,is.factor)]
+```
+
+
+
+
+#### 2.4.2.	Numerical variables  
+
+
+Concerning the numerical variables, we have 8 numerical features in the dataset without missing values but few of them have some outliers that needs to be investigated. 
+
+
+-	Outliers
+
+
+Looking into the dataset by plotting the numerical variables, we find that the variables with extreme values were spread among a handful observations. These variables with outliers are number_outpatient, number_inpatient and number_emergency. However, these variables have mean value very close to zero, removing a few outliers will result in zeroing all summary statistics, which caused some computation issues in subsequent processing. Consequently, the few outliers were kept as they were.
+
+
+```{r}
+# numeric variables in the datasets:
+names(diabetes)[sapply(diabetes,is.numeric)]
+
+
+# Visualization of the numeric variables
+op = par(mfrow=c(3,3))
+hist(diabetes$time_in_hospital, col = 'lightblue', main = "Distribution of variable Time in hospital")
+hist(diabetes$num_lab_procedures, col = 'lightblue', main = "Distribution of variable Number of labs procedures")
+hist(diabetes$num_procedures, col = 'lightblue', main = "Distribution of variable Number of procedures")
+hist(diabetes$num_medications, col = 'lightblue', main = "Distribution of variable Number of medications")
+hist(diabetes$number_outpatient, col = 'lightblue', main = "Distribution of variable Number of outpatient")
+hist(diabetes$number_emergency, col = 'lightblue', main = "Distribution of variable Number of emergency")
+hist(diabetes$number_inpatient, col = 'lightblue', main = "Distribution of variable Number of inpatient")
+hist(diabetes$number_diagnoses, col = 'lightblue', main = "Distribution of variable Number of diagnoses")
+par(op)
+```
+
+
+
+-	Correlations 
+
+
+One other aspect to explore for numerical variables is the correlation between them. The heatmap below shows these correlations in absolute values, as we go from dark blue to dark red, the absolute value of the correlation grows from 0 to 1. Thus, we see that in general these variables don’t have strong correlations. 
+
+```{r}
+library(reticulate)
+```
+
+```{r}
+py$diabetes = diabetes
+```
+
+```{python}
+# Switching into python
+# Major libraries:
+# Major libraries
+import os
+import scipy
+import bottleneck # for speeding up pandas operations
+##import numexpr # ditto
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from IPython.display import clear_output
+
+# Mining / EDA / dimensionality reduction
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.decomposition import PCA
+#from sklearn.grid_search import GridSearchCV
+from sklearn.preprocessing import scale
+from scipy.spatial.distance import euclidean
+
+# Unsupervised learning
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.cluster import DBSCAN, KMeans
+from sklearn.manifold import TSNE
+from sklearn.metrics.pairwise import pairwise_distances
+from matplotlib.colors import ListedColormap
+
+```
+
+
+```{python}
+# take the diabetes dataset object from R:
+
+Dataset = {}
+
+Dataset['Raw'] = pd.read_csv('https://raw.githubusercontent.com/Darwin22/Diabetes_patients/master/data/clean_diabetes.csv', low_memory=False)
+```
+
+
+
+
+```{python}
+# switch those having object type to categorical variables:
+Dataset['Datatyped'] = Dataset['Raw'].copy() # To allow comparison between datasets before and after modification
+# Convert features to appropriate datatype - nominal and ordinate variables as categorical dtypes, 
+cat_features = ['race', 'gender', 'admission_type_id',
+       'discharge_disposition_id', 'admission_source_id',
+       'metformin', 'A1Cresult','glipizide','glyburide','pioglitazone','rosiglitazone','insulin','change',
+                'diabetesMed', 'readmitted','diag_1_fact','diag_2_fact','diag_3_fact', 'age']
+for feature in cat_features:
+    Dataset['Datatyped'][feature] = Dataset['Datatyped'][feature].astype('category')
+    
+#Dataset['Datatyped'].dtypes # Check casting was successful
+
+#---------------------------------- Little exploration:
+# Separate the other variables from the readmitted variables (which is for supervised learning)
+y = Dataset['Datatyped'].readmitted
+X = Dataset['Datatyped'][(Dataset['Datatyped'].columns).drop('readmitted')]
+cat_features.remove('readmitted')
+# One-hot encoded categorical variables with many dimensions so that we can use theme in some algorithms
+X_ohe = pd.get_dummies(X, columns=cat_features)
+Dataset['Large OHE'] = X_ohe.join(y) 
+#Dataset['Large OHE'].shape
+
+#------ Heatmap of numerical features:
+num_features = Dataset['Datatyped'].columns.drop(cat_features).values
+num_features_corr = Dataset['Large OHE'][num_features].corr()
+plt.figure(figsize=(15,8))
+sns.heatmap(num_features_corr, annot=True, cmap='seismic')
+plt.xticks(rotation=90); plt.title('Heatmap of numerical feature Pearson correlation coefficients', size=14);
+plt.show()
+```
+
+
+
+
+
+
+**Thus, after all the cleaning we present the summary of the finalize dataset is presented below.**
+
+```{r}
+# Remove missing values in race:
+diabetes=diabetes[!is.na(diabetes$race),]
+
+summary(diabetes)
+
+```
+
+
+
+## 3. Unsupervisede learning
+
+### 3.1. PCA
+
+
+
+We begin this part by doing PCA analysis on the numerical variables in order to transform the set of observations of possibly correlated variables into a set of values of linearly uncorrelated variables. The idea is to reduce the number of these variables while maintaining approximately the same amount of information they bring into our case. After the computations, it turns out that the proportion of variance explained (PVE) by the first components is around 25%. And from the figure below, we see that the proportion of variance explained by the first two principal components is around 40%. 
+
+
+```{python}
+
+#-------------- Principal components:
+X_feat = Dataset['Large OHE'][(Dataset['Large OHE'].columns).drop('readmitted')]
+pca = PCA()
+ss = StandardScaler()
+# Standardize the data 
+stand_data = pd.DataFrame(ss.fit_transform(X_feat), index=X_feat.index,
+                                            columns=X_feat.columns)
+pc_labels = ['PC_'+str(i) for i in range(0,len(stand_data.columns))]
+pca_data = pd.DataFrame(pca.fit_transform(stand_data),
+                                      index=stand_data.index, columns=pc_labels)
+
+# Examine initial distribution of principal component variances
+vt = VarianceThreshold()
+vt.fit(pca_data)
+plt.figure(figsize=(15,5))
+plt.plot(np.arange(0,len(pca_data.columns)),pd.Series(vt.variances_), color=sns.color_palette('colorblind')[1])
+plt.xlabel('Principle component #'); plt.ylabel('Variance in component dimension');
+plt.title('Principle component variances before thresholding', size=14)
+plt.show()
+
+# explain variance ratio:
+#print('Explained variation per principal component: {}'.format(pca.explained_variance_ratio_))
+```
+
+
+```{r}
+###---------------------- PCA
+# we now perform a PCA on the numerical variables
+diabet_num = diabetes[,c('time_in_hospital','num_lab_procedures','num_procedures', 'num_medications',
+                         'number_outpatient', 'number_emergency','number_inpatient','number_diagnoses')]
+pr.out = prcomp(diabet_num, scale=TRUE)
+# proportion of variance explained by each principal component
+pve = (pr.out$sdev^2)/sum(pr.out$sdev^2)
+
+# plot the PVE explained by each components
+#plot(pve , xlab=" Principal Component ", ylab=" Proportion of Variance Explained ", ylim=c(0,1) ,type='b')
+plot(cumsum (pve ), xlab=" Principal Component ", ylab ="
+     Cumulative Proportion of Variance Explained ", ylim=c(0,1) ,type='b')
+```
+
+
+One thing we can do with the principal components is to use the first two components to explore the data by taking into account the classes of the readmission variable. the figure after present the projection of the dataset onto the first two principal components. It appeared that there were three primary clusters - one especially large one on the left, and two identically shaped smaller ones on the right. 
+
+
+```{python}
+# cluster of readmission in the first two components
+# Unsupervised learning
+Dataset['Unsupervised']=pca_data
+#Dataset['Unsupervised'].shape
+
+pc_50_labels = ['PC_'+str(j) for j in range(0, 51)]
+
+# Some algorithms used demand a lot of memory, so we'll need to use a smaller dataset for those
+chosen_indices = np.random.choice(Dataset['Unsupervised'].index, 10000, replace=False)
+Dataset['Unsupervised small'] = Dataset['Unsupervised'].loc[chosen_indices, pc_50_labels]
+
+plt.figure(figsize=(15,5))
+sns.regplot(x='PC_0', y='PC_1', data=Dataset['Unsupervised'], color=sns.color_palette('colorblind')[1], fit_reg=False);
+plt.title('Projection of dataset onto first two principal components')
+plt.show()
+```
+
+
+From the above graphic, the clusters are separated in the direction of the first component, which meant that by looking at this component's loadings it would be possible to identify what factors changed as we moved in its direction. By Analyzing the loadings, they can provide insight as to which categorical features are varying in the direction of the first components. 
+
+
+```{python}
+# show the loadings for the first principal components:
+PC_0_loadings = pd.DataFrame(pca.components_, index=pc_labels,
+             columns=Dataset['Large OHE'].columns.drop('readmitted')).loc['PC_0',:]
+PC_0_loadings[abs(PC_0_loadings)>0.1].sort_values()
+```
+
+
+
+We can see that the direction expresses the patient’s usage of diabetes medication- lower score suggested that a patient don’t really change medication or wasn't using any diabetes medications; contrariwise, larger scores suggested that a patient had a change in medication, was using at least one medication, tended to use more medications, or were using insulin/metformin. I was curious to know what these represented in detail. Therefore, this lead us on using in the next part K-means clustering with k=3 to explore the clusters. We will come back with the meaning of the loading values when analyzing the cluster in deeper.
+
+
+
+
+### 3.3. Clustering
+
+
+#### 3.2.1. K-means clustering
+
+To begin with, we used k-means clustering to split the dataset into the clusters identified above. By running the algorithm in python, we have three nicely partitioned clusters that can now be interrogated for their meaning with respect to the original dataset.
+
+
+```{python}
+#------------------------------------- K-Means Clustering---------------------------------------------
+# create dictionaries that will old the cluster objects
+KMClusterers = {} 
+KMClusterers['Parent'] = KMeans(n_clusters=2, random_state=0, max_iter=300)
+
+Clusters = {}
+Clusters['KM parent'] = pd.Series(KMClusterers['Parent'].fit_predict(Dataset['Unsupervised']),
+                              index=Dataset['Unsupervised'].index, name='KM parent')
+# this create the clusters in differents graphs
+#sns.lmplot(x='PC_0', y='PC_1', col='KM parent', data=Dataset['Unsupervised'].join(Clusters['KM parent']), palette='colorblind',
+#           hue='KM parent', fit_reg=False, size=5, aspect=1.4);
+#plt.title('Projection of dataset onto first two principal components')
+#plt.show()
+```
+
+
+```{python}
+
+# Reassemble the clusters in one graph
+Dataset['Unsupervised KM subset'] = Dataset['Unsupervised'].loc[Clusters['KM parent']==0, :]
+
+
+KMClusterers['Child'] = KMeans(n_clusters=2, random_state=0, max_iter=300)
+Clusters['KM child'] = pd.Series(KMClusterers['Child'].fit_predict(Dataset['Unsupervised KM subset']),
+                                 index=Dataset['Unsupervised KM subset'].index, name='KM child');
+
+Clusters['KM'] = Clusters['KM child'] + 2 
+Clusters['KM'] = pd.concat([Clusters['KM'],
+               Clusters['KM parent'].loc[Clusters['KM parent'].index.drop(Clusters['KM child'].index)]],
+               axis=0)
+Clusters['KM'].name = 'KM clusters'
+
+## creating the plot and showing the clusters on the first two principal components
+plt.figure(figsize=(16,7))
+sns.lmplot(x='PC_0', y='PC_1', data=Dataset['Unsupervised'].join(Clusters['KM']),
+           palette='colorblind', hue='KM clusters', fit_reg=False, height=4, aspect=2.5);
+plt.title('Projection of dataset onto the first two principal components')
+plt.show()
+```
+
+
+
+To make sense of these clusters, we take the cluster numbers of the observations and add them in the data frame as columns so we can analyze the results of the results of the variables based on each cluster. We start with the numerical variables and compute their means within each cluster. We normalized the features to allow variables of different magnitudes to be compared in a similar way. We present our findings in the following table and figure. 
+
+
+
+```{python}
+# Add the cluster number in the dataset so we can explore further the clusters 
+# Make datasets consisting of samples from each cluster
+Dataset['KM 1'] = Dataset['Datatyped'].loc[Clusters['KM']==1, :]
+Dataset['KM 2'] = Dataset['Datatyped'].loc[Clusters['KM']==2, :]
+Dataset['KM 3'] = Dataset['Datatyped'].loc[Clusters['KM']==3, :]
+
+# Create a dataframe containing the means of each feature for each of the above datasets
+k1_mus = Dataset['KM 1'].describe().loc['mean',:]
+k2_mus = Dataset['KM 2'].describe().loc['mean',:]
+k3_mus = Dataset['KM 3'].describe().loc['mean',:]
+kn_mus = pd.concat([k1_mus, k2_mus, k3_mus], axis=1)
+
+kn_mus.columns = ['Cluster 1', 'Cluster 2', 'Cluster 3']
+
+# we normalized the features to allow features of different magnitudes to be compared in a similar way.
+
+kn_mus = kn_mus.apply(func=(lambda row: row/(row.mean())), axis=1)
+cblind = [sns.color_palette('colorblind')[0],sns.color_palette('colorblind')[1],sns.color_palette('colorblind')[2]]
+plt.figure(figsize=(10, 7))
+g=kn_mus.plot.bar(cmap=ListedColormap(cblind), figsize=(15, 7), title='Cluster feature means')
+plt.show()
+#fig = plt.figure()
+# make a figure with the first plot only
+#fig.axes.append(g)
+#fig.show()
+
+# Scaling the means to better represent cluster differences
+kn_mus.apply(func=(lambda row: row/(row.mean())), axis=1) 
+
+```
+
+
+
+From the above charts and table, we can make few observations: 
+
+•	Patients in the first cluster spent between a third and half a day longer in hospital
+
+
+•	Patients in the first cluster had about 5% more lab procedures than those in clusters two or three, and were, on average, using between 15 and 25% more medicaments.
+
+
+•	Patients in the first cluster had a record of more encounters (inpatient, emergency, and outpatient).
+
+
+Remember in principal component part when we are presenting the meaning of the loadings in the first principal component in term of the categorical variables. We said that lower score suggested that a patient don’t really change medication or wasn't using any diabetes medications; contrariwise, larger scores suggested that a patient had a change in medication, was using at least one medication, tended to use more medications, or were using insulin/metformin. Thus, we can say that t patients in cluster 1 tended to use medications, patients in cluster 2 tended not to, and patients in cluster 3 tended to somewhere in between.
+One interesting variable in the dataset is the diagnosis type. It would then be interesting to see how the frequencies of each diagnosis type differed between the clusters.  The figure below does present exactly what we need. 
+
+
+```{python}
+# diagnosis between clusters:
+def normalised_value_counts(series):
+    return series.value_counts()/len(series)
+    
+plt.figure(figsize=(10, 7))
+f, ax = plt.subplots(1, 3, sharex=False, sharey=False, figsize=(16,6))
+N_bars = np.arange(len(Dataset['KM 1'].diag_1_fact.unique()))*2
+for i in range(3):
+    normalised_value_counts(Dataset['KM '+str(i+1)].diag_1_fact).plot(kind='barh', ax=ax[i],color=sns.color_palette('colorblind')[i])
+    ax[i].set_title('Cluster '+str(i+1))
+plt.tight_layout() 
+plt.show()
+```
+
+
+
+We than observe that:
+
+
+•	All clusters had circulatory diagnoses top
+
+
+•	Patients on fewer/no diabetes medications were readmitted much more frequently for digestive, respiratory and injury problems. Patients with many diabetes medications were admitted more frequently for respiratory and diabetes problems.
+
+
+The distribution of diagnoses suggested that diabetes diseases were more prominent in patients that took more diabetes-related medications than patients that took fewer or none at all, for whom digestive problems are more frequent.
+
+
+
+#### 3.2.2.	Hierarchical clustering
+
+
+In this part, we address the dataset by using this time hierarchical clustering, which group together, like the K-means, data points with similar characteristics. We execute the code in python to compute the dendrogram, and we obtain the following figure. When constructing the dendrogram, we decide to cut the tree at distance 160, which gives 6 clusters that shows below based on the 6 different colors. 
+
+
+
+```{python}
+
+#----------------------------- Hiararchical Clustering-------------------------
+import scipy.cluster.hierarchy as shc
+
+plt.figure(figsize=(10, 7))
+plt.title("Patients Dendograms")
+dend = shc.dendrogram(shc.linkage(Dataset['Unsupervised small'], method='ward'),color_threshold=160)
+plt.show()
+```
+
+
+
+Below, we again plot the dataset based on the first two components and color the points based on which cluster they belong to. We see that, unlike the result for the K-means clustering, the results show that there is not a well separation between the 6 clusters on the first two principal components. We only see that patients in cluster 2 (the green ones) are predominately on the positive side of the first principal component. We can say that the cluster represent patients that often change medication and generally diagnosed with respiratory and diabetes problem.
+
+
+```{python}
+
+# determine in which cluster the patient belong to
+from sklearn.cluster import AgglomerativeClustering
+
+cluster1 = AgglomerativeClustering(n_clusters=6, affinity='euclidean', linkage='ward')
+Dataset['Unsupervised small']['cluster'] = cluster1.fit_predict(Dataset['Unsupervised small'])
+ # plot the dataset in the first two components by cluster color
+#plt.figure(figsize=(10, 7))
+#plt.scatter(Dataset['Unsupervised small'].PC_0, Dataset['Unsupervised small'].PC_1, 
+#            c= Dataset['Unsupervised small'].cluster, cmap='rainbow')
+#plt.title('Projection of dataset onto the first two principal components');
+
+# a more interestin graph
+Dataset['result'] = Dataset['Unsupervised small'].copy()
+Dataset['result']['cluster']=Dataset['result']['cluster'].astype('category')
+
+sns.lmplot(x='PC_0', y='PC_1', data=Dataset['result'],hue='cluster', palette='colorblind',
+            fit_reg=False, size=5, aspect=2.5);
+plt.title('Projection of dataset onto the first two principal components')
+plt.show()
+```
+
+
+## 4.	Conclusion
+
+
+This project was a great learning opportunity. For the cleaning process, I had to develop a strategy to clean and explore this big dataset with that many variables using R. For the modeling part, because the methods are extremely computationally expensive, I decided to use python which make a way better use of the memory. 
+
+Using K-means clustering by choosing k =3, we have seen that data clustered into three different groups that can be well explained by the differences in the values of features. One group represents patients that take a lot of medications, these are the ones usually diagnosed with diabetes and respiratory problems. One group doesn’t change or does not take many medications, these are patients that were usually diagnosed for digestive problems. And the last group belong between the first two and have some particularity of both. 
+
+
+I also use hierarchical clustering by cutting the tree at level that generate 6 clusters. We see that these 6 clusters are not well separated on the first two principal components, and that we have better insights from the K-means clustering than the hierarchical clustering.
+One limitation of our project is that we use only the first two components as a mean to cluster and interpret the differences between the clusters. Further study can address this problem by adding the third and the fourth principal components. 
 
